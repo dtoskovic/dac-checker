@@ -101,28 +101,60 @@
   const resultDiv = document.getElementById("result");
   const checkBtn = document.getElementById("checkBtn");
 
-  // Let user press Enter to submit
   addressEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") checkDAC();
   });
-
   checkBtn.addEventListener("click", checkDAC);
 
-  // If user forgets "CA", try appending it (helps messy input)
   function normalizeAddress(input) {
     const s = input.trim();
     if (!s) return s;
-
     const hasCA = /\bCA\b/i.test(s) || /California/i.test(s);
-    const hasZip = /\b9\d{4}\b/.test(s);
     const looksLikeUS = /\bUSA\b/i.test(s) || /\bUnited States\b/i.test(s);
-
-    // If they didn't mention CA/California and didn't add a country,
-    // append " CA" to bias geocoder to California.
     if (!hasCA && !looksLikeUS) return s + " CA";
-
-    // Otherwise keep as-is.
     return s;
+  }
+
+  // JSONP helper (bypasses CORS)
+  function jsonp(url, timeoutMs = 12000) {
+    return new Promise((resolve, reject) => {
+      const cbName = "__jsonp_cb_" + Math.random().toString(36).slice(2);
+      const script = document.createElement("script");
+      const sep = url.includes("?") ? "&" : "?";
+      const fullUrl = url + sep + "callback=" + cbName;
+
+      let done = false;
+      const cleanup = () => {
+        if (script.parentNode) script.parentNode.removeChild(script);
+        try { delete window[cbName]; } catch {}
+      };
+
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error("JSONP request timed out"));
+      }, timeoutMs);
+
+      window[cbName] = (data) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        cleanup();
+        resolve(data);
+      };
+
+      script.onerror = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(new Error("JSONP script failed to load"));
+      };
+
+      script.src = fullUrl;
+      document.body.appendChild(script);
+    });
   }
 
   async function checkDAC() {
@@ -139,32 +171,28 @@
     resultDiv.innerHTML = "Checking...";
 
     try {
-      // 1) Geocode using U.S. Census Geocoder
+      // 1) Census Geocoder via JSONP (format=jsonp avoids CORS)
       const geoUrl =
         "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
         "?address=" + encodeURIComponent(address) +
-        "&benchmark=Public_AR_Current&format=json";
+        "&benchmark=Public_AR_Current&format=jsonp";
 
-      const geoRes = await fetch(geoUrl);
-      if (!geoRes.ok) throw new Error("Geocoder HTTP " + geoRes.status);
-
-      const geoData = await geoRes.json();
+      const geoData = await jsonp(geoUrl);
       const matches = geoData?.result?.addressMatches || [];
 
       if (matches.length === 0) {
         resultDiv.className = "result no";
         resultDiv.innerHTML =
-          "Address not found.<div class='details'>Tip: add a ZIP code, like <span class='mono'>90404</span>.</div>";
+          "Address not found.<div class='details'>Tip: add ZIP code (ex: <span class='mono'>90404</span>).</div>";
         return;
       }
 
-      // Best match
       const best = matches[0];
       const lon = best.coordinates.x;
       const lat = best.coordinates.y;
       const matchedAddress = best.matchedAddress;
 
-      // 2) Query SB535 DAC layer (ArcGIS REST)
+      // 2) SB535 layer (this one usually works with fetch from GitHub Pages)
       const dacBase =
         "https://gispublic.waterboards.ca.gov/portalserver/rest/services/SB535tracts2022/MapServer/0/query";
 
@@ -180,9 +208,7 @@
 
       const dacRes = await fetch(dacUrl);
       if (!dacRes.ok) throw new Error("DAC service HTTP " + dacRes.status);
-
       const dacData = await dacRes.json();
-      if (dacData?.error?.message) throw new Error("DAC service: " + dacData.error.message);
 
       const features = dacData?.features || [];
 
@@ -223,7 +249,6 @@
     }
   }
 
-  // Prevent HTML injection when showing user-entered text
   function escapeHtml(s) {
     return String(s)
       .replaceAll("&", "&amp;")
