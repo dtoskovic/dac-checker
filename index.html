@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SB 535 DAC Checker</title>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+      background: #f5f7fa;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .box {
+      background: white;
+      padding: 22px;
+      border-radius: 14px;
+      width: 520px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+    }
+
+    h2 { margin: 0 0 12px 0; font-size: 20px; }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      margin-top: 8px;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 10px;
+      border: none;
+      background: #2d6cdf;
+      color: white;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+
+    .result {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 10px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .yes { background: #e6f6ea; color: #1a7f37; }
+    .no  { background: #fdeaea; color: #b42318; }
+    .loading { background: #eef2f7; color: #333; }
+
+    .details {
+      margin-top: 10px;
+      text-align: left;
+      font-weight: 500;
+      font-size: 14px;
+      line-height: 1.5;
+      background: rgba(255,255,255,0.6);
+      padding: 10px;
+      border-radius: 8px;
+    }
+
+    .label { color: #667085; font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+  </style>
+</head>
+
+<body>
+  <div class="box">
+    <h2>CA SB 535 DAC Checker</h2>
+
+    <input
+      id="address"
+      placeholder='Try: "1547 stanford st santa monica"'
+      autocomplete="street-address"
+    />
+
+    <button id="checkBtn" type="button">Check Address</button>
+
+    <div id="result"></div>
+  </div>
+
+<script>
+  const addressEl = document.getElementById("address");
+  const resultDiv = document.getElementById("result");
+  const checkBtn = document.getElementById("checkBtn");
+
+  // Let user press Enter to submit
+  addressEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") checkDAC();
+  });
+
+  checkBtn.addEventListener("click", checkDAC);
+
+  // If user forgets "CA", try appending it (helps messy input)
+  function normalizeAddress(input) {
+    const s = input.trim();
+    if (!s) return s;
+
+    const hasCA = /\bCA\b/i.test(s) || /California/i.test(s);
+    const hasZip = /\b9\d{4}\b/.test(s);
+    const looksLikeUS = /\bUSA\b/i.test(s) || /\bUnited States\b/i.test(s);
+
+    // If they didn't mention CA/California and didn't add a country,
+    // append " CA" to bias geocoder to California.
+    if (!hasCA && !looksLikeUS) return s + " CA";
+
+    // Otherwise keep as-is.
+    return s;
+  }
+
+  async function checkDAC() {
+    const raw = addressEl.value;
+    const address = normalizeAddress(raw);
+
+    if (!address) {
+      resultDiv.innerHTML = "";
+      return;
+    }
+
+    checkBtn.disabled = true;
+    resultDiv.className = "result loading";
+    resultDiv.innerHTML = "Checking...";
+
+    try {
+      // 1) Geocode using U.S. Census Geocoder
+      const geoUrl =
+        "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
+        "?address=" + encodeURIComponent(address) +
+        "&benchmark=Public_AR_Current&format=json";
+
+      const geoRes = await fetch(geoUrl);
+      if (!geoRes.ok) throw new Error("Geocoder HTTP " + geoRes.status);
+
+      const geoData = await geoRes.json();
+      const matches = geoData?.result?.addressMatches || [];
+
+      if (matches.length === 0) {
+        resultDiv.className = "result no";
+        resultDiv.innerHTML =
+          "Address not found.<div class='details'>Tip: add a ZIP code, like <span class='mono'>90404</span>.</div>";
+        return;
+      }
+
+      // Best match
+      const best = matches[0];
+      const lon = best.coordinates.x;
+      const lat = best.coordinates.y;
+      const matchedAddress = best.matchedAddress;
+
+      // 2) Query SB535 DAC layer (ArcGIS REST)
+      const dacBase =
+        "https://gispublic.waterboards.ca.gov/portalserver/rest/services/SB535tracts2022/MapServer/0/query";
+
+      const dacUrl =
+        dacBase +
+        "?f=json" +
+        "&geometry=" + encodeURIComponent(lon + "," + lat) +
+        "&geometryType=esriGeometryPoint" +
+        "&inSR=4326" +
+        "&spatialRel=esriSpatialRelIntersects" +
+        "&outFields=DAC_category,Tract,County" +
+        "&returnGeometry=false";
+
+      const dacRes = await fetch(dacUrl);
+      if (!dacRes.ok) throw new Error("DAC service HTTP " + dacRes.status);
+
+      const dacData = await dacRes.json();
+      if (dacData?.error?.message) throw new Error("DAC service: " + dacData.error.message);
+
+      const features = dacData?.features || [];
+
+      if (features.length === 0) {
+        resultDiv.className = "result no";
+        resultDiv.innerHTML =
+          "❌ NOT in an SB 535 Disadvantaged Community" +
+          `<div class="details">
+            <div><span class="label">You typed:</span> ${escapeHtml(raw)}</div>
+            <div><span class="label">Matched address:</span> ${escapeHtml(matchedAddress)}</div>
+            <div><span class="label">Coordinates:</span> <span class="mono">${lat.toFixed(6)}, ${lon.toFixed(6)}</span></div>
+          </div>`;
+        return;
+      }
+
+      const attr = features[0].attributes || {};
+      resultDiv.className = "result yes";
+      resultDiv.innerHTML =
+        "✅ IN an SB 535 Disadvantaged Community" +
+        `<div class="details">
+          <div><span class="label">You typed:</span> ${escapeHtml(raw)}</div>
+          <div><span class="label">Matched address:</span> ${escapeHtml(matchedAddress)}</div>
+          <div><span class="label">Coordinates:</span> <span class="mono">${lat.toFixed(6)}, ${lon.toFixed(6)}</span></div>
+          <div style="margin-top:8px;">
+            <div><span class="label">County:</span> ${escapeHtml(attr.County ?? "Unknown")}</div>
+            <div><span class="label">Tract:</span> ${escapeHtml(attr.Tract ?? "Unknown")}</div>
+            <div><span class="label">DAC Category:</span> ${escapeHtml(attr.DAC_category ?? "Unknown")}</div>
+          </div>
+        </div>`;
+
+    } catch (err) {
+      resultDiv.className = "result no";
+      resultDiv.innerHTML =
+        "Error checking address." +
+        `<div class="details"><span class="label">Details:</span> ${escapeHtml(err?.message || String(err))}</div>`;
+    } finally {
+      checkBtn.disabled = false;
+    }
+  }
+
+  // Prevent HTML injection when showing user-entered text
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+</script>
+</body>
+</html>
