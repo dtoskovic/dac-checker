@@ -171,27 +171,25 @@
     resultDiv.innerHTML = "Checking...";
 
     try {
-      // 1) Census Geocoder via JSONP (format=jsonp avoids CORS)
-      const geoUrl =
-        "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
-        "?address=" + encodeURIComponent(address) +
-        "&benchmark=Public_AR_Current&format=jsonp";
+      // 1) Census Geocoder via JSONP (NO fetch)
+const geoUrl =
+  "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
+  "?address=" + encodeURIComponent(address) +
+  "&benchmark=Public_AR_Current&format=jsonp";
 
-      const geoData = await jsonp(geoUrl);
-      const matches = geoData?.result?.addressMatches || [];
+const geoData = await jsonp(geoUrl);
+const matches = geoData?.result?.addressMatches || [];
 
-      if (matches.length === 0) {
-        resultDiv.className = "result no";
-        resultDiv.innerHTML =
-          "Address not found.<div class='details'>Tip: add ZIP code (ex: <span class='mono'>90404</span>).</div>";
-        return;
-      }
+if (matches.length === 0) {
+  resultDiv.className = "result no";
+  resultDiv.innerHTML = "Address not found.";
+  return;
+}
 
-      const best = matches[0];
-      const lon = best.coordinates.x;
-      const lat = best.coordinates.y;
-      const matchedAddress = best.matchedAddress;
-
+const best = matches[0];
+const lon = best.coordinates.x;
+const lat = best.coordinates.y;
+const matchedAddress = best.matchedAddress;
       // 2) SB535 layer (this one usually works with fetch from GitHub Pages)
       const dacBase =
         "https://gispublic.waterboards.ca.gov/portalserver/rest/services/SB535tracts2022/MapServer/0/query";
