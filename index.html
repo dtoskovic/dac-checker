@@ -115,13 +115,12 @@
     return s;
   }
 
-  // JSONP helper (bypasses CORS)
-  function jsonp(url, timeoutMs = 12000) {
+  // JSONP helper to bypass CORS
+  function jsonp(url, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
       const cbName = "__jsonp_cb_" + Math.random().toString(36).slice(2);
       const script = document.createElement("script");
       const sep = url.includes("?") ? "&" : "?";
-      const fullUrl = url + sep + "callback=" + cbName;
 
       let done = false;
       const cleanup = () => {
@@ -133,7 +132,7 @@
         if (done) return;
         done = true;
         cleanup();
-        reject(new Error("JSONP request timed out"));
+        reject(new Error("JSONP timed out"));
       }, timeoutMs);
 
       window[cbName] = (data) => {
@@ -152,7 +151,8 @@
         reject(new Error("JSONP script failed to load"));
       };
 
-      script.src = fullUrl;
+      // Add callback param + cache buster
+      script.src = url + sep + "callback=" + cbName + "&_=" + Date.now();
       document.body.appendChild(script);
     });
   }
@@ -171,26 +171,28 @@
     resultDiv.innerHTML = "Checking...";
 
     try {
-      // 1) Census Geocoder via JSONP (NO fetch)
-const geoUrl =
-  "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
-  "?address=" + encodeURIComponent(address) +
-  "&benchmark=Public_AR_Current&format=jsonp";
+      // ✅ MUST be jsonp (NOT fetch), MUST be format=jsonp (NOT json)
+      const geoUrl =
+        "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" +
+        "?address=" + encodeURIComponent(address) +
+        "&benchmark=Public_AR_Current&format=jsonp";
 
-const geoData = await jsonp(geoUrl);
-const matches = geoData?.result?.addressMatches || [];
+      const geoData = await jsonp(geoUrl);
+      const matches = geoData?.result?.addressMatches || [];
 
-if (matches.length === 0) {
-  resultDiv.className = "result no";
-  resultDiv.innerHTML = "Address not found.";
-  return;
-}
+      if (matches.length === 0) {
+        resultDiv.className = "result no";
+        resultDiv.innerHTML =
+          "Address not found.<div class='details'>Tip: add ZIP code (ex: <span class='mono'>90404</span>).</div>";
+        return;
+      }
 
-const best = matches[0];
-const lon = best.coordinates.x;
-const lat = best.coordinates.y;
-const matchedAddress = best.matchedAddress;
-      // 2) SB535 layer (this one usually works with fetch from GitHub Pages)
+      const best = matches[0];
+      const lon = best.coordinates.x;
+      const lat = best.coordinates.y;
+      const matchedAddress = best.matchedAddress;
+
+      // SB535 lookup
       const dacBase =
         "https://gispublic.waterboards.ca.gov/portalserver/rest/services/SB535tracts2022/MapServer/0/query";
 
@@ -202,7 +204,8 @@ const matchedAddress = best.matchedAddress;
         "&inSR=4326" +
         "&spatialRel=esriSpatialRelIntersects" +
         "&outFields=DAC_category,Tract,County" +
-        "&returnGeometry=false";
+        "&returnGeometry=false" +
+        "&_=" + Date.now(); // cache buster
 
       const dacRes = await fetch(dacUrl);
       if (!dacRes.ok) throw new Error("DAC service HTTP " + dacRes.status);
@@ -256,5 +259,6 @@ const matchedAddress = best.matchedAddress;
       .replaceAll("'", "&#039;");
   }
 </script>
+
 </body>
 </html>
